@@ -1,52 +1,76 @@
-# IG Reels View Tracker
+# Duel Clipping — Instagram View Tracker
 
-Weekly view count tracker for Instagram Reels. Handles age-restricted content via authenticated session cookies.
+Fetches view counts for Instagram reels and updates your Sheet1 tracking spreadsheet.
+
+---
 
 ## Requirements
 
-- [Node.js](https://nodejs.org) (v18 or newer) — no other installs needed
+Install **Node.js** (free): https://nodejs.org — download the LTS version, run the installer, leave all defaults.
 
-## Setup
+No other setup needed.
 
-1. Edit **`reels.csv`** — add your reel URLs (and optionally a `username` column)
+---
+
+## How to export CSVs from Google Sheets
+
+You need to do this before each weekly run.
+
+1. Open the Google Sheet in your browser
+2. Click the **duel-post-submission-history** tab at the bottom
+3. Click **File → Download → Comma Separated Values (.csv)**
+4. Repeat for the **Sheet1** tab
+5. Move both downloaded `.csv` files into the **`input`** folder next to this program
+
+---
+
+## How to run
+
+1. Drop your two CSVs into the `input/` folder
 2. Double-click **`run.bat`**
-3. On first run, paste your Instagram cookies when prompted
+3. Follow the prompts:
+   - First run: paste your Instagram cookies (instructions shown on screen)
+   - Choose which week to scan (or press Enter for all)
+   - Choose which column to write views to (auto-suggested)
+4. Watch it fetch — progress is saved live so if it crashes just re-run
+5. When done, find **`output/Sheet1_updated.csv`**
+6. Upload it back to Google Sheets: **File → Import → Upload → Replace current sheet**
 
-## reels.csv format
+---
 
-```
-url,username
-https://www.instagram.com/reel/ABC123/,johndoe
-https://www.instagram.com/reel/DEF456/,janedoe
-```
+## Cookie setup
 
-- `url` — required. Full IG reel URL (tracking params are stripped automatically)
-- `username` — optional. Groups results by submitter in the report
+Cookies are needed to access age-restricted Instagram content. Use a dedicated throwaway account.
 
-## Getting cookies
-
-1. Open [instagram.com](https://instagram.com) in Chrome, log in with your tracker account
-2. Press F12 → Application → Cookies → `https://www.instagram.com`
+1. Open Chrome → go to https://www.instagram.com → log in
+2. Press **F12** → click **Application** tab → expand **Cookies** → click `https://www.instagram.com`
 3. Copy the values for `sessionid`, `csrftoken`, `ds_user_id`
-4. Paste them when the script asks (or edit `cookies.txt` directly)
+4. Paste when the program asks
+
+Cookies are saved locally and reused until they expire (~2–4 weeks). The program will ask again automatically when they stop working.
+
+---
 
 ## Output
 
-Reports are saved to `reports/report_YYYY-MM-DD.csv` with columns:
+`output/Sheet1_updated.csv` — your Sheet1 with a new `views_wXX` column added, filled with:
 
-| Column | Description |
-|--------|-------------|
-| username | Submitter (from input CSV) |
-| url | Reel URL |
-| shortcode | IG shortcode |
-| views | Views this run |
-| prev_views | Views last run |
-| delta | Change (+/-) |
-| delta_pct | % change |
-| error | Any fetch error |
+| Value | Meaning |
+|-------|---------|
+| `1234567` | View count fetched successfully |
+| `DELETED` | Reel has been deleted or made private |
+| `BROKEN` | Link couldn't be reached (timeout, error) |
 
-## How it works
+---
 
-- **Cache:** All runs are stored in `cache.db`. If the script dies mid-run, just re-run it — already-fetched reels are skipped.
-- **Cookie expiry:** If IG returns auth errors mid-run, the script pauses and asks for new cookies, then continues.
-- **Delta:** Each report compares against the previous run automatically.
+## Folder structure
+
+```
+ig-tracker/
+├── input/          ← drop your CSVs here
+├── output/         ← updated Sheet1 appears here
+├── run.bat         ← double-click to run
+├── tracker.js      ← the program
+├── cookies.txt     ← auto-created, stores your session
+└── cache.json      ← auto-created, saves progress mid-run
+```

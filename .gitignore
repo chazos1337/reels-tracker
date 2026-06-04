@@ -1,5 +1,13 @@
 cookies.txt
+cache.json
 cache.db
 cache.db.json
-reports/
 input/
+output/
+reports/
+reels.csv
+run_w22_missing.js
+run_w22_missing.bat
+run_w23.js
+run_w23.bat
+paste.bat
