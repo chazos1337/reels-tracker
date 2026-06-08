@@ -161,6 +161,11 @@ function fetchViews(shortcode) {
         'Cookie'     : cookieStr(),
       },
     }, res => {
+      if (res.statusCode === 302) {
+        res.resume();
+        resolve({ views: null, authFail: true, redirect: true, error: '302 redirect (session expired)' });
+        return;
+      }
       let body = '';
       res.on('data', c => body += c);
       res.on('end', () => {
@@ -467,14 +472,18 @@ async function main() {
     const result = await fetchViews(shortcode);
 
     if (result.authFail) {
-      authFailStreak++;
-      if (authFailStreak >= 2) {
-        console.log('AUTH FAILED');
+      const isRedirect = !!result.redirect;
+      if (!isRedirect) authFailStreak++;
+
+      if (isRedirect || authFailStreak >= 2) {
+        console.log(isRedirect ? 'REDIRECTED (302)' : 'AUTH FAILED');
         console.log('');
-        // Save progress before prompting
         fs.writeFileSync(path.join(OUTPUT_DIR, 'Sheet1_updated.csv'), serializeCSV(views.headers, views.rows));
         saveCache();
-        await cookieSetup('Instagram rejected your cookies — they may have expired. Re-enter them to continue.');
+        const reason = isRedirect
+          ? 'Instagram returned a 302 redirect — your session has expired. Re-enter your cookies to continue.'
+          : 'Instagram rejected your cookies — they may have expired. Re-enter them to continue.';
+        await cookieSetup(reason);
         loadCookies();
         authFailStreak = 0;
       }
