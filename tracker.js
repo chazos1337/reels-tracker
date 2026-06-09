@@ -68,7 +68,15 @@ function serializeCSV(headers, rows) {
 let cache = {};
 function loadCache() {
   if (fs.existsSync(CACHE_FILE)) {
-    try { cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch { cache = {}; }
+    const raw = fs.readFileSync(CACHE_FILE, 'utf8');
+    try {
+      cache = JSON.parse(raw);
+      console.log(`  ✓ Cache loaded: ${Object.keys(cache).length} entries`);
+    } catch (e) {
+      console.error(`\n  ✗ cache.json is corrupted and could not be parsed: ${e.message}`);
+      console.error('  Refusing to continue — fix or delete cache.json first.\n');
+      process.exit(1);
+    }
   }
 }
 function saveCache() { fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2)); }
