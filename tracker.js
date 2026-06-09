@@ -175,7 +175,8 @@ function fetchViews(shortcode) {
             const item = data.items[0];
             resolve({ views: item.play_count ?? item.view_count ?? 0, authFail: false, error: null });
           } else {
-            const authFail = res.statusCode === 401 || res.statusCode === 403 || data?.message === 'login_required';
+            const authMsg  = /login_required|checkpoint_required|not_authorized/i.test(data?.message || '');
+            const authFail = res.statusCode === 401 || res.statusCode === 403 || authMsg;
             const gone     = /not_found|media_not_found|deleted/i.test(data?.message || '');
             resolve({ views: null, authFail, gone, error: data?.message || `HTTP ${res.statusCode}` });
           }
