@@ -1,76 +1,93 @@
-# Duel Clipping — Instagram View Tracker
+# Duel Clipping — Instagram Reels View Tracker
 
-Fetches view counts for Instagram reels and updates your Sheet1 tracking spreadsheet.
-
----
-
-## Requirements
-
-Install **Node.js** (free): https://nodejs.org — download the LTS version, run the installer, leave all defaults.
-
-No other setup needed.
+Tracks Instagram reel view counts from a Google Sheets export and writes results back to a CSV you can re-import. Supports multiple Instagram accounts running in parallel for significantly faster scraping.
 
 ---
 
-## How to export CSVs from Google Sheets
+## What's new (multi-account update)
 
-You need to do this before each weekly run.
+The original single-account version fetched one reel every 2–3 seconds. This version:
 
-1. Open the Google Sheet in your browser
-2. Click the **duel-post-submission-history** tab at the bottom
-3. Click **File → Download → Comma Separated Values (.csv)**
-4. Repeat for the **Sheet1** tab
-5. Move both downloaded `.csv` files into the **`input`** folder next to this program
-
----
-
-## How to run
-
-1. Drop your two CSVs into the `input/` folder
-2. Double-click **`run.bat`**
-3. Follow the prompts:
-   - First run: paste your Instagram cookies (instructions shown on screen)
-   - Choose which week to scan (or press Enter for all)
-   - Choose which column to write views to (auto-suggested)
-4. Watch it fetch — progress is saved live so if it crashes just re-run
-5. When done, find **`output/Sheet1_updated.csv`**
-6. Upload it back to Google Sheets: **File → Import → Upload → Replace current sheet**
+- **Multiple accounts in parallel** — add as many Instagram cookie accounts as you have. Each runs as its own independent worker, giving roughly N× speed with N accounts.
+- **Faster per-request delay** — reduced from 2–3 s to 0.9–1.5 s with randomised jitter, which mimics human browsing patterns better than a fixed interval.
+- **Auto-pause on any error** — if any worker hits a 4xx, 429, or rate-limit response it immediately puts the item back in the queue, backs off for 15 seconds, then retries. Other workers keep running unaffected.
+- **Guided account setup on startup** — on first run (or when re-entering credentials) you're asked how many accounts you want to use, then prompted for each one's cookies in sequence. Accounts are saved to `cookies/` and reused on subsequent runs.
+- **Expired session recovery** — if a session expires mid-run, that worker pauses and prompts for new cookies without stopping the other workers or losing progress.
+- **Progress is never lost** — results are written to disk after every fetch via `cache.json` and `output/Sheet1_updated.csv`, so you can kill and resume at any point.
 
 ---
 
-## Cookie setup
+## Folder layout
 
-Cookies are needed to access age-restricted Instagram content. Use a dedicated throwaway account.
+```
+reels-tracker/
+├── tracker.js          ← main script
+├── run.bat             ← double-click to run on Windows
+├── cache.json          ← auto-generated, tracks fetched shortcodes
+├── cookies/
+│   ├── README.txt
+│   ├── cookies_1.txt   ← one file per Instagram account
+│   ├── cookies_2.txt
+│   └── ...
+├── input/
+│   ├── duel-post-submission-history...csv
+│   └── Sheet1...csv
+└── output/
+    └── Sheet1_updated.csv
+```
 
-1. Open Chrome → go to https://www.instagram.com → log in
-2. Press **F12** → click **Application** tab → expand **Cookies** → click `https://www.instagram.com`
-3. Copy the values for `sessionid`, `csrftoken`, `ds_user_id`
-4. Paste when the program asks
+---
 
-Cookies are saved locally and reused until they expire (~2–4 weeks). The program will ask again automatically when they stop working.
+## Setup
+
+**Requirements:** [Node.js](https://nodejs.org) (v18+). No other dependencies.
+
+1. Clone or download this repo
+2. Export two CSVs from your Google Sheet into `input/`:
+   - The submission history tab (contains `source_message_id`, `platform`, `post_link`)
+   - The Sheet1 views tab (contains `views_w*` columns)
+3. Run `run.bat` (Windows) or `node tracker.js`
+4. On first run, enter how many accounts you want and paste the cookies for each
+
+---
+
+## Getting Instagram cookies
+
+For each account:
+
+1. Open Chrome and go to [instagram.com](https://www.instagram.com)
+2. Log in to the account
+3. Press `F12` → **Application** tab → **Cookies** → `https://www.instagram.com`
+4. Copy the values for:
+   - `sessionid`
+   - `csrftoken`
+   - `ds_user_id`
+
+> Use dedicated throwaway accounts — not your personal Instagram.
+
+Cookie files are saved in `cookies/cookies_1.txt`, `cookies_2.txt`, etc. On subsequent runs the script will ask if you want to reuse them or re-enter.
+
+---
+
+## Speed reference
+
+| Accounts | Approx. time for 200 reels |
+|----------|---------------------------|
+| 1        | ~8 min                    |
+| 3        | ~3 min                    |
+| 5        | ~2 min                    |
+| 10       | ~1 min                    |
+
+Times assume 0.9–1.5 s per request per worker. Results vary based on Instagram's response times and rate limiting.
 
 ---
 
 ## Output
 
-`output/Sheet1_updated.csv` — your Sheet1 with a new `views_wXX` column added, filled with:
-
-| Value | Meaning |
-|-------|---------|
-| `1234567` | View count fetched successfully |
-| `DELETED` | Reel has been deleted or made private |
-| `BROKEN` | Link couldn't be reached (timeout, error) |
+`output/Sheet1_updated.csv` — the Sheet1 CSV with a new `views_wN` column filled in. Import back to Google Sheets via **File → Import → Upload → Replace current sheet**.
 
 ---
 
-## Folder structure
+## Cleaning up
 
-```
-ig-tracker/
-├── input/          ← drop your CSVs here
-├── output/         ← updated Sheet1 appears here
-├── run.bat         ← double-click to run
-├── tracker.js      ← the program
-├── cookies.txt     ← auto-created, stores your session
-└── cache.json      ← auto-created, saves progress mid-run
-```
+To remove everything from this machine, delete the `reels-tracker/` folder. Nothing is installed globally.

@@ -1,14 +1,14 @@
 'use strict';
 
 /**
- * Duel Clipping — Instagram View Tracker
+ * Duel Clipping — Instagram View Tracker (multi-cookie edition)
  *
  * Reads two CSVs from input/:
  *   - Submission history (duel-post-submission-history...)
  *   - View sheet (Sheet1...)
  *
- * Filters Instagram posts for a chosen week, finds ones missing
- * views in the target column, fetches from IG, updates Sheet1.
+ * Cookie accounts go in cookies/ folder as cookies_1.txt, cookies_2.txt, etc.
+ * Each account runs as its own parallel worker → N× speed with N accounts.
  *
  * Output → output/Sheet1_updated.csv
  */
@@ -19,11 +19,11 @@ const path     = require('path');
 const readline = require('readline');
 
 // ── paths ─────────────────────────────────────────────────────────────────────
-const DIR          = __dirname;
-const INPUT_DIR    = path.join(DIR, 'input');
-const OUTPUT_DIR   = path.join(DIR, 'output');
-const COOKIES_FILE = path.join(DIR, 'cookies.txt');
-const CACHE_FILE   = path.join(DIR, 'cache.json');
+const DIR         = __dirname;
+const INPUT_DIR   = path.join(DIR, 'input');
+const OUTPUT_DIR  = path.join(DIR, 'output');
+const COOKIES_DIR = path.join(DIR, 'cookies');
+const CACHE_FILE  = path.join(DIR, 'cache.json');
 
 // ── CSV ───────────────────────────────────────────────────────────────────────
 function splitLine(line) {
@@ -39,7 +39,6 @@ function splitLine(line) {
 
 function parseCSV(text) {
   let lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n');
-  // Strip Google Sheets export prefix row ("Untitled spreadsheet - ...")
   if (lines[0].match(/^"?[^,]+ - [^,]+"?,*$/i) && !lines[0].toLowerCase().includes('source_message_id') && !lines[0].toLowerCase().includes('views_')) {
     lines = lines.slice(1);
   }
@@ -64,8 +63,10 @@ function serializeCSV(headers, rows) {
   return lines.join('\n');
 }
 
-// ── cache (simple JSON — no native sqlite needed) ─────────────────────────────
+// ── cache ─────────────────────────────────────────────────────────────────────
 let cache = {};
+const cacheLock = { writing: false };
+
 function loadCache() {
   if (fs.existsSync(CACHE_FILE)) {
     const raw = fs.readFileSync(CACHE_FILE, 'utf8');
@@ -73,49 +74,70 @@ function loadCache() {
       cache = JSON.parse(raw);
       console.log(`  ✓ Cache loaded: ${Object.keys(cache).length} entries`);
     } catch (e) {
-      console.error(`\n  ✗ cache.json is corrupted and could not be parsed: ${e.message}`);
-      console.error('  Refusing to continue — fix or delete cache.json first.\n');
+      console.error(`\n  ✗ cache.json corrupted: ${e.message}`);
+      console.error('  Fix or delete cache.json first.\n');
       process.exit(1);
     }
   }
 }
-function saveCache() { fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2)); }
+
+function saveCache() {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+}
+
 function cacheKey(runLabel, shortcode) { return `${runLabel}::${shortcode}`; }
 
-// ── cookies ───────────────────────────────────────────────────────────────────
-let cookies = {};
-
-function loadCookies() {
-  if (!fs.existsSync(COOKIES_FILE)) return false;
-  cookies = {};
-  for (const line of fs.readFileSync(COOKIES_FILE, 'utf8').split('\n')) {
+// ── cookie pool ───────────────────────────────────────────────────────────────
+function parseCookieFile(text) {
+  const obj = {};
+  for (const line of text.split('\n')) {
     const eq = line.indexOf('=');
-    if (eq > 0) cookies[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+    if (eq > 0) obj[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
   }
-  return !!(cookies.sessionid && cookies.csrftoken && cookies.ds_user_id);
+  return obj;
 }
 
-function saveCookies() {
-  fs.writeFileSync(COOKIES_FILE, Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('\n'));
-}
-
-function cookieStr() {
+function cookieStr(cookies) {
   return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+function loadCookiePool() {
+  if (!fs.existsSync(COOKIES_DIR)) fs.mkdirSync(COOKIES_DIR);
+
+  // Support both cookies_1.txt style and legacy cookies.txt in root
+  const pool = [];
+
+  const rootCookies = path.join(DIR, 'cookies.txt');
+  if (fs.existsSync(rootCookies)) {
+    const c = parseCookieFile(fs.readFileSync(rootCookies, 'utf8'));
+    if (c.sessionid && c.csrftoken && c.ds_user_id) {
+      pool.push({ id: 'account_0', cookies: c, file: rootCookies });
+    }
+  }
+
+  const files = fs.readdirSync(COOKIES_DIR)
+    .filter(f => f.endsWith('.txt'))
+    .sort();
+
+  for (const f of files) {
+    const c = parseCookieFile(fs.readFileSync(path.join(COOKIES_DIR, f), 'utf8'));
+    if (c.sessionid && c.csrftoken && c.ds_user_id) {
+      pool.push({ id: f.replace('.txt', ''), cookies: c, file: path.join(COOKIES_DIR, f) });
+    }
+  }
+
+  return pool;
+}
+
+function saveCookieAccount(accountId, cookies) {
+  const file = path.join(COOKIES_DIR, `${accountId}.txt`);
+  fs.writeFileSync(file, Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('\n'));
+  return file;
 }
 
 // ── terminal helpers ──────────────────────────────────────────────────────────
 const W = 64;
-const hr   = (c = '─') => c.repeat(W);
-const bold = s => s; // plain terminal, no ANSI needed
-
-function header(sub) {
-  console.clear();
-  console.log(hr('━'));
-  console.log('  Duel Clipping — Instagram View Tracker');
-  console.log(hr('━'));
-  if (sub) { console.log(''); console.log(`  ${sub}`); console.log(hr()); }
-  console.log('');
-}
+const hr = (c = '─') => c.repeat(W);
 
 function ask(q, def) {
   const hint = def !== undefined ? ` [${def}]` : '';
@@ -155,7 +177,7 @@ function shortcodeToId(sc) {
   return n.toString();
 }
 
-function fetchViews(shortcode) {
+function fetchViews(shortcode, cookies) {
   return new Promise(resolve => {
     const req = https.request({
       hostname: 'i.instagram.com',
@@ -166,12 +188,21 @@ function fetchViews(shortcode) {
         'X-CSRFToken': cookies.csrftoken,
         'Referer'    : 'https://www.instagram.com/',
         'X-IG-App-ID': '936619743392459',
-        'Cookie'     : cookieStr(),
+        'Cookie'     : cookieStr(cookies),
       },
     }, res => {
       if (res.statusCode === 302) {
         res.resume();
         resolve({ views: null, authFail: true, redirect: true, error: '302 redirect (session expired)' });
+        return;
+      }
+      const status = res.statusCode;
+      // Any non-2xx that isn't a known "post gone" signal = rate limit / error pause
+      const isRateLimit = status === 429;
+      const isClientErr = status >= 400 && status !== 404 && status !== 410;
+      if (isRateLimit || (isClientErr && status !== 401 && status !== 403)) {
+        res.resume();
+        resolve({ views: null, authFail: false, rateLimited: true, error: `HTTP ${status}` });
         return;
       }
       let body = '';
@@ -184,9 +215,9 @@ function fetchViews(shortcode) {
             resolve({ views: item.play_count ?? item.view_count ?? 0, authFail: false, error: null });
           } else {
             const authMsg  = /login_required|checkpoint_required|not_authorized/i.test(data?.message || '');
-            const authFail = res.statusCode === 401 || res.statusCode === 403 || authMsg;
+            const authFail = status === 401 || status === 403 || authMsg;
             const gone     = /not_found|media_not_found|deleted/i.test(data?.message || '');
-            resolve({ views: null, authFail, gone, error: data?.message || `HTTP ${res.statusCode}` });
+            resolve({ views: null, authFail, gone, error: data?.message || `HTTP ${status}` });
           }
         } catch {
           resolve({ views: null, authFail: false, error: 'parse error' });
@@ -203,11 +234,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── file detection ────────────────────────────────────────────────────────────
 function sniffHeader(text) {
-  // Returns the actual header line, skipping any Google Sheets prefix row
   const lines = text.replace(/\r\n/g, '\n').split('\n').filter(l => l.trim());
   for (const line of lines) {
     const lower = line.toLowerCase();
-    // A real header has multiple comma-separated identifiable words, no spaces-only tokens
     if (lower.includes('source_message_id') || lower.includes('submission_id') ||
         lower.includes('views_') || lower.includes('post_link') || lower.includes('platform')) {
       return lower;
@@ -219,20 +248,16 @@ function sniffHeader(text) {
 function detectInputFiles() {
   if (!fs.existsSync(INPUT_DIR)) fs.mkdirSync(INPUT_DIR);
   const csvs = fs.readdirSync(INPUT_DIR).filter(f => f.toLowerCase().endsWith('.csv'));
-
   let submissions = null, sheet1 = null;
-
   for (const f of csvs) {
     const text = fs.readFileSync(path.join(INPUT_DIR, f), 'utf8');
     const header = sniffHeader(text);
-    // Sheet1 check first — it also has source_message_id but uniquely has views_ columns
     if (header.includes('views_')) {
       sheet1 = f;
     } else if (header.includes('source_message_id') && header.includes('submission_id')) {
       submissions = f;
     }
   }
-
   return { submissions, sheet1, all: csvs };
 }
 
@@ -250,254 +275,91 @@ function detectNextViewsColumn(headers) {
   return { col: `views_w${max + 1}`, num: max + 1, prev: `views_w${max}` };
 }
 
-// ── cookie setup screen ───────────────────────────────────────────────────────
-async function cookieSetup(reason = '') {
-  header('Cookie Setup');
+// ── cookie setup ──────────────────────────────────────────────────────────────
+async function cookieSetup(accountId, reason = '') {
+  console.log('\n' + hr());
+  if (reason) console.log(`\n  ⚠  ${reason}\n`);
+  console.log(`\n  Setting up cookies for: ${accountId}`);
+  console.log('\n  HOW TO GET COOKIES:');
+  console.log('  1. Open Chrome → instagram.com → log in');
+  console.log('  2. F12 → Application → Cookies → https://www.instagram.com');
+  console.log('  3. Copy: sessionid, csrftoken, ds_user_id\n');
 
-  if (reason) { console.log(`  ⚠  ${reason}\n`); }
-
-  console.log('  Instagram blocks unauthenticated access to age-restricted content.');
-  console.log('  You need to provide session cookies from a logged-in Instagram account.\n');
-  console.log('  HOW TO GET YOUR COOKIES:');
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log('  1. Open Chrome and go to https://www.instagram.com');
-  console.log('  2. Log in to your Instagram account (use a dedicated throwaway)');
-  console.log('  3. Press F12 to open DevTools');
-  console.log('  4. Click the "Application" tab at the top');
-  console.log('  5. In the left panel, expand "Cookies" → click "https://www.instagram.com"');
-  console.log('  6. Find and copy the values for these three cookies:');
-  console.log('       sessionid    (long string with %3A in it)');
-  console.log('       csrftoken    (shorter string with dashes)');
-  console.log('       ds_user_id   (your numeric user ID)');
-  console.log('  ─────────────────────────────────────────────────────────────\n');
-
+  const cookies = {};
   cookies.sessionid  = await ask('Paste sessionid');
   cookies.csrftoken  = await ask('Paste csrftoken');
   cookies.ds_user_id = await ask('Paste ds_user_id');
-  saveCookies();
-  console.log('\n  ✓ Cookies saved — you won\'t need to do this again until they expire.\n');
-  await pause();
+
+  const file = saveCookieAccount(accountId, cookies);
+  console.log(`\n  ✓ Saved to ${file}\n`);
+  return cookies;
 }
 
-// ── main flow ─────────────────────────────────────────────────────────────────
-async function main() {
-  if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
-  loadCache();
+// ── shared output state ───────────────────────────────────────────────────────
+// Workers write to this atomically-ish via saveSharedOutput
+let sharedViews = null;
+let saveQueued = false;
 
-  // ── STEP 1: cookies ──────────────────────────────────────────────────────
-  if (!loadCookies()) {
-    await cookieSetup('No cookies found. You need to set these up before continuing.');
-    loadCookies();
-  }
-
-  // ── STEP 2: detect input files ───────────────────────────────────────────
-  header('Duel Clipping — Instagram View Tracker');
-
-  const { submissions, sheet1, all } = detectInputFiles();
-
-  console.log('  HOW TO EXPORT CSVs FROM GOOGLE SHEETS:');
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log('  1. Open the Google Sheet in your browser');
-  console.log('  2. Click File → Download → Comma Separated Values (.csv)');
-  console.log('  3. Do this for BOTH sheets:');
-  console.log('       • duel-post-submission-history  (the submissions tab)');
-  console.log('       • Sheet1                        (the views tracking tab)');
-  console.log('  4. Move both downloaded .csv files into the "input" folder');
-  console.log('     next to this program\n');
-  console.log(`  Input folder: ${INPUT_DIR}\n`);
-  console.log('  ─────────────────────────────────────────────────────────────\n');
-
-  if (!submissions || !sheet1) {
-    console.log('  ✗ Could not find required files in input/\n');
-    if (!submissions) console.log('    Missing: submission history CSV  (should contain "source_message_id" column)');
-    if (!sheet1)      console.log('    Missing: Sheet1 CSV              (should contain "views_w*" columns)');
-    console.log('\n  Add both files to the input/ folder and re-run.\n');
-    await pause('Press Enter to exit...');
-    process.exit(1);
-  }
-
-  console.log(`  ✓ Submissions : ${submissions}`);
-  console.log(`  ✓ View sheet  : ${sheet1}\n`);
-
-  // ── STEP 3: parse both files ─────────────────────────────────────────────
-  const subs   = parseCSV(fs.readFileSync(path.join(INPUT_DIR, submissions), 'utf8'));
-  const views  = parseCSV(fs.readFileSync(path.join(INPUT_DIR, sheet1), 'utf8'));
-
-  const colWeek     = subs.headers.find(h => h === 'week') || 'week';
-  const colPlatform = subs.headers.find(h => h === 'platform') || 'platform';
-  const colPostLink = subs.headers.find(h => h.includes('post_link') || h.includes('post link')) || 'post_link';
-
-  // ── STEP 4: week filter ──────────────────────────────────────────────────
-  const weeks = availableWeeks(subs.rows, colWeek);
-  console.log('  Weeks found in submissions:');
-  weeks.forEach(w => {
-    const count = subs.rows.filter(r => r[colWeek] === w && r[colPlatform] === 'Instagram').length;
-    console.log(`    ${w}  (${count} Instagram posts)`);
+function saveSharedOutput() {
+  if (saveQueued) return;
+  saveQueued = true;
+  setImmediate(() => {
+    saveQueued = false;
+    fs.writeFileSync(
+      path.join(OUTPUT_DIR, 'Sheet1_updated.csv'),
+      serializeCSV(sharedViews.headers, sharedViews.rows)
+    );
+    saveCache();
   });
-  console.log('');
+}
 
-  let weekFilter = await ask('Enter week to scan (e.g. 2026-W22) or press Enter for ALL', 'ALL');
-  weekFilter = weekFilter.trim().toUpperCase() === 'ALL' ? null : weekFilter.trim();
-  console.log('');
+// ── worker ────────────────────────────────────────────────────────────────────
+async function runWorker(account, queue, runLabel, prevCol, stats, log) {
+  let { cookies } = account;
+  let authFailStreak = 0;
 
-  // ── STEP 5: target column ────────────────────────────────────────────────
-  const detected     = detectNextViewsColumn(views.headers);
-  const existingCols = views.headers.filter(h => /^views_w?\d+$/i.test(h));
+  while (true) {
+    // Atomically grab next item
+    const item = queue.shift();
+    if (!item) break;
 
-  console.log(`  Existing columns : ${existingCols.join('  →  ') || '(none yet)'}`);
-  console.log(`  Next column      : ${detected.col}`);
-  console.log('');
-  console.log(`  [1] This week — add ${detected.col} (new column)`);
-  console.log(`  [2] Backfill  — fill missing cells in an existing column`);
-  console.log('');
+    const { subRow, s1Row, shortcode, index, total } = item;
+    const key = cacheKey(runLabel, shortcode);
 
-  const modeChoice = await choose('Choose mode', [{ key: '1', label: '' }, { key: '2', label: '' }]);
-  console.log('');
-
-  let targetCol;
-  let backfillMode = false;
-
-  if (modeChoice === '1') {
-    targetCol = detected.col;
-    console.log(`  ✓ Writing to new column: ${targetCol}\n`);
-  } else {
-    backfillMode = true;
-    if (!existingCols.length) {
-      console.log('  ✗ No existing columns to backfill.\n');
-      await pause('Press Enter to exit...');
-      process.exit(1);
-    }
-    console.log('  Which column to backfill?\n');
-    existingCols.forEach((c, i) => {
-      const missing = views.rows.filter(r => r['platform'] === 'Instagram' && (!r[c] || r[c] === '0')).length;
-      console.log(`  [${i + 1}] ${c}   (${missing} Instagram rows with no data)`);
-    });
-    console.log('');
-    let pick = null;
-    while (!pick) {
-      const ans = await ask('Enter number');
-      const idx = parseInt(ans) - 1;
-      if (!isNaN(idx) && existingCols[idx]) pick = existingCols[idx];
-      else console.log('  Invalid choice, try again.\n');
-    }
-    targetCol = pick;
-    console.log(`\n  ✓ Backfilling missing cells in: ${targetCol}\n`);
-  }
-
-  // Add column to sheet1 if it doesn't exist
-  let isNewCol = false;
-  if (!views.headers.includes(targetCol)) {
-    views.headers.push(targetCol);
-    views.rows.forEach(r => { if (r[targetCol] === undefined) r[targetCol] = ''; });
-    isNewCol = true;
-    console.log(`\n  ✓ New column "${targetCol}" will be added to Sheet1`);
-  } else {
-    console.log(`\n  ✓ Will write to existing column "${targetCol}"`);
-  }
-
-  // Previous column for delta display
-  const prevColIdx = existingCols.length > 0 ? existingCols[existingCols.length - 1] : null;
-  const prevCol    = (!isNewCol && prevColIdx) ? prevColIdx
-                   : (detected.prev && views.headers.includes(detected.prev)) ? detected.prev : null;
-
-  console.log('');
-
-  // ── STEP 6: find target rows ─────────────────────────────────────────────
-  // Build lookup: normalised post_link → sheet1 row
-  const normUrl = u => (u || '').split('?')[0].replace(/\/$/, '').toLowerCase();
-  const sheet1Map = new Map();
-  for (const row of views.rows) {
-    const key = normUrl(row['post_link'] || row['Post Link'] || '');
-    if (key) sheet1Map.set(key, row);
-  }
-
-  // Filter submission rows
-  const igSubs = subs.rows.filter(r => {
-    if (r[colPlatform] !== 'Instagram') return false;
-    if (weekFilter && r[colWeek] !== weekFilter) return false;
-    return !!stripShortcode(r[colPostLink]);
-  });
-
-  // Classify each
-  const toFetch = [], alreadyDone = [], notInSheet1 = [];
-
-  for (const row of igSubs) {
-    const key  = normUrl(row[colPostLink]);
-    const s1   = sheet1Map.get(key);
-    if (!s1) {
-      notInSheet1.push(row);
-    } else {
-      const val = (s1[targetCol] || '').trim();
-      if (!val || val === '0') {
-        toFetch.push({ subRow: row, s1Row: s1 });
-      } else {
-        alreadyDone.push(row);
-      }
-    }
-  }
-
-  console.log(hr());
-  console.log('');
-  console.log(`  Total Instagram submissions matched : ${igSubs.length}`);
-  console.log(`  Already have "${targetCol}"          : ${alreadyDone.length}`);
-  console.log(`  Not in Sheet1 (will skip)           : ${notInSheet1.length}`);
-  console.log(`  To fetch                            : ${toFetch.length}`);
-  console.log('');
-
-  if (!toFetch.length) {
-    console.log('  Nothing to fetch — all matching rows already have data.\n');
-    await pause('Press Enter to exit...');
-    process.exit(0);
-  }
-
-  const go = await ask(`  Fetch ${toFetch.length} reels now? (y/n)`, 'y');
-  if (go.toLowerCase() !== 'y') { console.log('\n  Cancelled.\n'); process.exit(0); }
-
-  // ── STEP 7: run label for cache ──────────────────────────────────────────
-  const runLabel = `${weekFilter || 'ALL'}::${targetCol}`;
-
-  console.log('\n' + hr());
-  console.log('');
-
-  let fetched = 0, succeeded = 0, deleted = 0, broken = 0, authFailStreak = 0;
-
-  for (const { subRow, s1Row } of toFetch) {
-    fetched++;
-    const shortcode = stripShortcode(subRow[colPostLink]);
-    const pad       = String(fetched).padStart(String(toFetch.length).length);
-    const key       = cacheKey(runLabel, shortcode);
-
-    // Resume from cache
+    // Cache hit
     if (cache[key] !== undefined) {
       s1Row[targetCol] = String(cache[key]);
-      process.stdout.write(`  [${pad}/${toFetch.length}] ${shortcode.padEnd(14)} → `);
-      console.log(`${String(cache[key]).padStart(12)} (cached)`);
-      succeeded++;
+      stats.succeeded++;
+      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → ${String(cache[key]).padStart(12)} (cached)`);
+      saveSharedOutput();
       continue;
     }
 
-    process.stdout.write(`  [${pad}/${toFetch.length}] ${shortcode.padEnd(14)} → `);
+    log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → fetching...`);
 
-    const result = await fetchViews(shortcode);
+    const result = await fetchViews(shortcode, cookies);
+
+    if (result.rateLimited) {
+      queue.unshift(item);
+      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → PAUSED (${result.error}) — backing off 15s`);
+      await sleep(15000);
+      continue;
+    }
 
     if (result.authFail) {
-      const isRedirect = !!result.redirect;
-      if (!isRedirect) authFailStreak++;
+      authFailStreak++;
+      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → AUTH FAILED (streak: ${authFailStreak})`);
 
-      if (isRedirect || authFailStreak >= 2) {
-        console.log(isRedirect ? 'REDIRECTED (302)' : 'AUTH FAILED');
-        console.log('');
-        fs.writeFileSync(path.join(OUTPUT_DIR, 'Sheet1_updated.csv'), serializeCSV(views.headers, views.rows));
-        saveCache();
-        const reason = isRedirect
-          ? 'Instagram returned a 302 redirect — your session has expired. Re-enter your cookies to continue.'
-          : 'Instagram rejected your cookies — they may have expired. Re-enter them to continue.';
-        await cookieSetup(reason);
-        loadCookies();
+      if (authFailStreak >= 2 || result.redirect) {
+        queue.unshift(item);
+        const reason = result.redirect
+          ? `Account ${account.id}: session expired (302 redirect)`
+          : `Account ${account.id}: cookies rejected by Instagram`;
+        cookies = await cookieSetup(account.id, reason);
+        account.cookies = cookies;
         authFailStreak = 0;
       }
-      // Retry this reel
-      fetched--;
+      await sleep(1000);
       continue;
     }
 
@@ -507,53 +369,254 @@ async function main() {
       const label = String(result.views);
       s1Row[targetCol] = label;
       cache[key] = label;
-      succeeded++;
+      stats.succeeded++;
 
-      const prev = prevCol ? Number(s1Row[prevCol]) : null;
+      const prev  = prevCol ? Number(s1Row[prevCol]) : null;
       const delta = (prev && prev > 0 && result.views > 0)
         ? `  (${result.views - prev >= 0 ? '+' : ''}${(result.views - prev).toLocaleString()} vs ${prevCol})`
         : '';
-      console.log(`${result.views.toLocaleString().padStart(12)} views${delta}`);
+      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → ${result.views.toLocaleString().padStart(12)} views${delta}`);
     } else {
       const isGone = result.gone || /not_found|media_not_found|404/i.test(result.error || '');
       const label  = isGone ? 'DELETED' : 'BROKEN';
       s1Row[targetCol] = label;
       cache[key] = label;
-      isGone ? deleted++ : broken++;
-      console.log(`${label.padStart(12)}  (${result.error})`);
+      isGone ? stats.deleted++ : stats.broken++;
+      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → ${label.padStart(12)}  (${result.error})`);
     }
 
-    // Save output + cache after every fetch — never lose progress
-    fs.writeFileSync(path.join(OUTPUT_DIR, 'Sheet1_updated.csv'), serializeCSV(views.headers, views.rows));
-    saveCache();
+    saveSharedOutput();
 
-    if (fetched < toFetch.length) await sleep(2000 + Math.random() * 1000);
+    // Per-worker rate limit delay — floor 900ms, random jitter up to +600ms
+    await sleep(900 + Math.random() * 600);
+  }
+}
+
+// targetCol is set during main and used by workers
+let targetCol = '';
+
+// ── main ──────────────────────────────────────────────────────────────────────
+async function main() {
+  if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
+  if (!fs.existsSync(COOKIES_DIR)) fs.mkdirSync(COOKIES_DIR);
+  loadCache();
+
+  // ── cookie pool setup ────────────────────────────────────────────────────
+  console.log('\n' + hr('━'));
+  console.log('  Duel Clipping — Instagram View Tracker (multi-account)');
+  console.log(hr('━'));
+
+  let pool = loadCookiePool();
+
+  if (pool.length) {
+    console.log(`\n  Found ${pool.length} saved account(s): ${pool.map(a => a.id).join(', ')}`);
+    const reuse = await ask('Use saved accounts? (y) or re-enter all? (n)', 'y');
+    if (reuse.toLowerCase() !== 'y') pool = [];
   }
 
-  // ── STEP 8: final output ─────────────────────────────────────────────────
-  const outFile = path.join(OUTPUT_DIR, 'Sheet1_updated.csv');
-  fs.writeFileSync(outFile, serializeCSV(views.headers, views.rows));
+  if (!pool.length) {
+    console.log('');
+    let count = 0;
+    while (count < 1 || isNaN(count)) {
+      const ans = await ask('How many Instagram accounts do you want to use?');
+      count = parseInt(ans);
+      if (isNaN(count) || count < 1) console.log('  Enter a number >= 1.\n');
+    }
+    console.log('');
+    for (let i = 1; i <= count; i++) {
+      console.log(`  — Account ${i} of ${count} —`);
+      const id = `cookies_${i}`;
+      const cookies = await cookieSetup(id);
+      pool.push({ id, cookies, file: path.join(COOKIES_DIR, `${id}.txt`) });
+      console.log('');
+    }
+  }
+
+  console.log(`  ✓ ${pool.length} account(s) ready: ${pool.map(a => a.id).join(', ')}`);
+  console.log(`  ✓ Expected speed: ~${pool.length}× faster than single-account\n`);
+
+  // ── detect input files ───────────────────────────────────────────────────
+  const { submissions, sheet1 } = detectInputFiles();
+
+  if (!submissions || !sheet1) {
+    console.log('  ✗ Could not find required CSVs in input/\n');
+    if (!submissions) console.log('    Missing: submission history CSV');
+    if (!sheet1)      console.log('    Missing: Sheet1 CSV');
+    console.log(`\n  Add both files to: ${INPUT_DIR}\n`);
+    await pause('Press Enter to exit...');
+    process.exit(1);
+  }
+
+  console.log(`  ✓ Submissions : ${submissions}`);
+  console.log(`  ✓ View sheet  : ${sheet1}\n`);
+
+  // ── parse ────────────────────────────────────────────────────────────────
+  const subs  = parseCSV(fs.readFileSync(path.join(INPUT_DIR, submissions), 'utf8'));
+  const views = parseCSV(fs.readFileSync(path.join(INPUT_DIR, sheet1), 'utf8'));
+
+  sharedViews = views;
+
+  const colWeek     = subs.headers.find(h => h === 'week') || 'week';
+  const colPlatform = subs.headers.find(h => h === 'platform') || 'platform';
+  const colPostLink = subs.headers.find(h => h.includes('post_link') || h.includes('post link')) || 'post_link';
+
+  // ── week filter ──────────────────────────────────────────────────────────
+  const weeks = availableWeeks(subs.rows, colWeek);
+  console.log('  Weeks found:');
+  weeks.forEach(w => {
+    const count = subs.rows.filter(r => r[colWeek] === w && r[colPlatform] === 'Instagram').length;
+    console.log(`    ${w}  (${count} Instagram posts)`);
+  });
+  console.log('');
+
+  let weekFilter = await ask('Week to scan (e.g. 2026-W22) or Enter for ALL', 'ALL');
+  weekFilter = weekFilter.trim().toUpperCase() === 'ALL' ? null : weekFilter.trim();
+  console.log('');
+
+  // ── target column ────────────────────────────────────────────────────────
+  const detected     = detectNextViewsColumn(views.headers);
+  const existingCols = views.headers.filter(h => /^views_w?\d+$/i.test(h));
+
+  console.log(`  Existing columns : ${existingCols.join('  →  ') || '(none yet)'}`);
+  console.log(`  Next column      : ${detected.col}\n`);
+  console.log(`  [1] This week — add ${detected.col}`);
+  console.log('  [2] Backfill  — fill missing cells in existing column\n');
+
+  const modeChoice = await choose('Choose mode', [{ key: '1' }, { key: '2' }]);
+  console.log('');
+
+  let backfillMode = false;
+
+  if (modeChoice === '1') {
+    targetCol = detected.col;
+    console.log(`  ✓ Writing to new column: ${targetCol}\n`);
+  } else {
+    backfillMode = true;
+    if (!existingCols.length) {
+      console.log('  ✗ No existing columns to backfill.\n');
+      process.exit(1);
+    }
+    existingCols.forEach((c, i) => {
+      const missing = views.rows.filter(r => r['platform'] === 'Instagram' && (!r[c] || r[c] === '0')).length;
+      console.log(`  [${i + 1}] ${c}   (${missing} missing)`);
+    });
+    console.log('');
+    let pick = null;
+    while (!pick) {
+      const ans = await ask('Enter number');
+      const idx = parseInt(ans) - 1;
+      if (!isNaN(idx) && existingCols[idx]) pick = existingCols[idx];
+      else console.log('  Invalid choice.\n');
+    }
+    targetCol = pick;
+    console.log(`\n  ✓ Backfilling: ${targetCol}\n`);
+  }
+
+  if (!views.headers.includes(targetCol)) {
+    views.headers.push(targetCol);
+    views.rows.forEach(r => { if (r[targetCol] === undefined) r[targetCol] = ''; });
+    console.log(`  ✓ New column "${targetCol}" added\n`);
+  }
+
+  const prevColIdx = existingCols[existingCols.length - 1];
+  const prevCol    = (detected.prev && views.headers.includes(detected.prev)) ? detected.prev
+                   : (prevColIdx && prevColIdx !== targetCol) ? prevColIdx : null;
+
+  // ── build work queue ─────────────────────────────────────────────────────
+  const normUrl = u => (u || '').split('?')[0].replace(/\/$/, '').toLowerCase();
+  const sheet1Map = new Map();
+  for (const row of views.rows) {
+    const key = normUrl(row['post_link'] || row['Post Link'] || '');
+    if (key) sheet1Map.set(key, row);
+  }
+
+  const igSubs = subs.rows.filter(r => {
+    if (r[colPlatform] !== 'Instagram') return false;
+    if (weekFilter && r[colWeek] !== weekFilter) return false;
+    return !!stripShortcode(r[colPostLink]);
+  });
+
+  const toFetch = [], alreadyDone = [], notInSheet1 = [];
+  for (const row of igSubs) {
+    const key = normUrl(row[colPostLink]);
+    const s1  = sheet1Map.get(key);
+    if (!s1) {
+      notInSheet1.push(row);
+    } else {
+      const val = (s1[targetCol] || '').trim();
+      if (!val || val === '0') toFetch.push({ subRow: row, s1Row: s1 });
+      else alreadyDone.push(row);
+    }
+  }
+
+  console.log(hr());
+  console.log(`\n  Total IG submissions : ${igSubs.length}`);
+  console.log(`  Already done         : ${alreadyDone.length}`);
+  console.log(`  Not in Sheet1        : ${notInSheet1.length}`);
+  console.log(`  To fetch             : ${toFetch.length}`);
+  console.log(`  Workers (accounts)   : ${pool.length}`);
+  if (toFetch.length > 0) {
+    const perWorker  = Math.ceil(toFetch.length / pool.length);
+    const estSecs    = perWorker * 2.5;
+    const estMins    = Math.ceil(estSecs / 60);
+    console.log(`  Est. time           : ~${estMins} min  (vs ~${Math.ceil(toFetch.length * 2.5 / 60)} min single-account)`);
+  }
+  console.log('');
+
+  if (!toFetch.length) {
+    console.log('  Nothing to fetch — all rows already have data.\n');
+    await pause('Press Enter to exit...');
+    process.exit(0);
+  }
+
+  const go = await ask(`  Fetch ${toFetch.length} reels with ${pool.length} account(s) now? (y/n)`, 'y');
+  if (go.toLowerCase() !== 'y') { console.log('\n  Cancelled.\n'); process.exit(0); }
+
+  // ── build queue with index labels ────────────────────────────────────────
+  const runLabel = `${weekFilter || 'ALL'}::${targetCol}`;
+  const queue = toFetch.map((item, i) => ({
+    ...item,
+    shortcode: stripShortcode(item.subRow[colPostLink]),
+    index: i + 1,
+    total: toFetch.length,
+  }));
+
+  console.log('\n' + hr());
+  console.log('');
+
+  const stats = { succeeded: 0, deleted: 0, broken: 0 };
+  const logMu = [];
+  const log = msg => { console.log('  ' + msg); };
+
+  // ── launch workers in parallel ───────────────────────────────────────────
+  // Stagger start by 500ms per worker to avoid bursting all at once
+  const workerPromises = pool.map((account, i) =>
+    sleep(i * 500).then(() => runWorker(account, queue, runLabel, prevCol, stats, log))
+  );
+
+  await Promise.all(workerPromises);
+
+  // ── final save ───────────────────────────────────────────────────────────
+  fs.writeFileSync(
+    path.join(OUTPUT_DIR, 'Sheet1_updated.csv'),
+    serializeCSV(views.headers, views.rows)
+  );
   saveCache();
 
   console.log('');
   console.log(hr());
-  console.log('');
-  console.log(`  ✓ Complete`);
-  console.log(`    Fetched   : ${succeeded}`);
-  console.log(`    Deleted   : ${deleted}`);
-  console.log(`    Broken    : ${broken}`);
-  console.log('');
-  console.log(`  ✓ Updated Sheet1 saved to:`);
-  console.log(`    ${outFile}`);
-  console.log('');
-  console.log('  Upload Sheet1_updated.csv back to Google Sheets:');
-  console.log('  File → Import → Upload → Replace current sheet');
-  console.log('');
+  console.log(`\n  ✓ Complete`);
+  console.log(`    Fetched   : ${stats.succeeded}`);
+  console.log(`    Deleted   : ${stats.deleted}`);
+  console.log(`    Broken    : ${stats.broken}`);
+  console.log(`\n  ✓ Saved to: ${path.join(OUTPUT_DIR, 'Sheet1_updated.csv')}\n`);
+  console.log('  Upload back to Google Sheets:');
+  console.log('  File → Import → Upload → Replace current sheet\n');
   await pause('Press Enter to exit...');
 }
 
 main().catch(e => {
   console.error('\n  ✗ Unexpected error:', e.message);
-  console.error('  Please screenshot this and send to your admin.\n');
+  console.error(e.stack);
   process.exitCode = 1;
 });

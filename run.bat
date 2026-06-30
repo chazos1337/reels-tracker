@@ -1,3 +1,4 @@
 @echo off
-node "%~dp0tracker.js" %*
+cd /d "%~dp0"
+node tracker.js
 pause
