@@ -18,6 +18,17 @@ const fs       = require('fs');
 const path     = require('path');
 const readline = require('readline');
 
+// ── color ─────────────────────────────────────────────────────────────────────
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const codes = { bold: 1, red: 31, green: 32, yellow: 33, cyan: 36, gray: 90 };
+const paint = (name, s) => useColor ? `\x1b[${codes[name]}m${s}\x1b[0m` : String(s);
+const ok      = s => paint('green', s);
+const warn    = s => paint('yellow', s);
+const err     = s => paint('red', s);
+const info    = s => paint('cyan', s);
+const dimTxt  = s => paint('gray', s);
+const bold    = s => paint('bold', s);
+
 // ── paths ─────────────────────────────────────────────────────────────────────
 const DIR         = __dirname;
 const INPUT_DIR   = path.join(DIR, 'input');
@@ -72,10 +83,10 @@ function loadCache() {
     const raw = fs.readFileSync(CACHE_FILE, 'utf8');
     try {
       cache = JSON.parse(raw);
-      console.log(`  ✓ Cache loaded: ${Object.keys(cache).length} entries`);
+      console.log(dimTxt(`  ✓ Cache loaded: ${Object.keys(cache).length} entries`));
     } catch (e) {
-      console.error(`\n  ✗ cache.json corrupted: ${e.message}`);
-      console.error('  Fix or delete cache.json first.\n');
+      console.error(err(`\n  ✗ cache.json corrupted: ${e.message}`));
+      console.error(err('  Fix or delete cache.json first.\n'));
       process.exit(1);
     }
   }
@@ -137,13 +148,13 @@ function saveCookieAccount(accountId, cookies) {
 
 // ── terminal helpers ──────────────────────────────────────────────────────────
 const W = 64;
-const hr = (c = '─') => c.repeat(W);
+const hr = (c = '─') => dimTxt(c.repeat(W));
 
 function ask(q, def) {
-  const hint = def !== undefined ? ` [${def}]` : '';
+  const hint = def !== undefined ? dimTxt(` [${def}]`) : '';
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
-    rl.question(`  ${q}${hint}: `, ans => {
+    rl.question(`  ${info('?')} ${q}${hint}: `, ans => {
       rl.close();
       const trimmed = ans.trim();
       resolve(trimmed === '' && def !== undefined ? def : trimmed);
@@ -157,7 +168,7 @@ function choose(q, options) {
       const ans = await ask(q);
       const match = options.find(o => o.key.toLowerCase() === ans.toLowerCase());
       if (match) return resolve(match.key);
-      console.log('  Invalid choice, try again.\n');
+      console.log(err('  Invalid choice, try again.\n'));
     }
   });
 }
@@ -292,12 +303,12 @@ function detectNextViewsColumn(headers) {
 // ── cookie setup ──────────────────────────────────────────────────────────────
 async function cookieSetup(accountId, reason = '') {
   console.log('\n' + hr());
-  if (reason) console.log(`\n  ⚠  ${reason}\n`);
-  console.log(`\n  Setting up cookies for: ${accountId}`);
-  console.log('\n  HOW TO GET COOKIES:');
-  console.log('  1. Open Chrome → instagram.com → log in');
-  console.log('  2. F12 → Application → Cookies → https://www.instagram.com');
-  console.log('  3. Copy: sessionid, csrftoken, ds_user_id\n');
+  if (reason) console.log(`\n  ${warn('⚠')}  ${warn(reason)}\n`);
+  console.log(`\n  Setting up cookies for: ${bold(accountId)}`);
+  console.log(dimTxt('\n  HOW TO GET COOKIES:'));
+  console.log(dimTxt('  1. Open Chrome → instagram.com → log in'));
+  console.log(dimTxt('  2. F12 → Application → Cookies → https://www.instagram.com'));
+  console.log(dimTxt('  3. Copy: sessionid, csrftoken, ds_user_id\n'));
 
   const cookies = {};
   cookies.sessionid  = await ask('Paste sessionid');
@@ -305,7 +316,7 @@ async function cookieSetup(accountId, reason = '') {
   cookies.ds_user_id = await ask('Paste ds_user_id');
 
   const file = saveCookieAccount(accountId, cookies);
-  console.log(`\n  ✓ Saved to ${file}\n`);
+  console.log(ok(`\n  ✓ Saved to ${file}\n`));
   return cookies;
 }
 
@@ -340,29 +351,31 @@ async function runWorker(account, queue, runLabel, prevCol, stats, log) {
     const { subRow, s1Row, shortcode, index, total } = item;
     const key = cacheKey(runLabel, shortcode);
 
+    const tag = `${dimTxt(`[${String(index).padStart(String(total).length)}/${total}]`)} ${info(account.id.padEnd(12))} ${shortcode.padEnd(14)}`;
+
     // Cache hit
     if (cache[key] !== undefined) {
       s1Row[targetCol] = String(cache[key]);
       stats.succeeded++;
-      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → ${String(cache[key]).padStart(12)} (cached)`);
+      log(`${tag} → ${dimTxt(String(cache[key]).padStart(12) + ' (cached)')}`);
       saveSharedOutput();
       continue;
     }
 
-    log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → fetching...`);
+    log(`${tag} → ${dimTxt('fetching...')}`);
 
     const result = await fetchViews(shortcode, cookies);
 
     if (result.rateLimited) {
       queue.unshift(item);
-      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → PAUSED (${result.error}) — backing off 15s`);
+      log(`${tag} → ${warn(`PAUSED (${result.error}) — backing off 15s`)}`);
       await sleep(15000);
       continue;
     }
 
     if (result.authFail) {
       authFailStreak++;
-      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → AUTH FAILED (streak: ${authFailStreak})`);
+      log(`${tag} → ${err(`AUTH FAILED (streak: ${authFailStreak})`)}`);
 
       if (authFailStreak >= 2 || result.redirect) {
         queue.unshift(item);
@@ -387,16 +400,17 @@ async function runWorker(account, queue, runLabel, prevCol, stats, log) {
 
       const prev  = prevCol ? Number(s1Row[prevCol]) : null;
       const delta = (prev && prev > 0 && result.views > 0)
-        ? `  (${result.views - prev >= 0 ? '+' : ''}${(result.views - prev).toLocaleString()} vs ${prevCol})`
+        ? `  ${dimTxt(`(${result.views - prev >= 0 ? '+' : ''}${(result.views - prev).toLocaleString()} vs ${prevCol})`)}`
         : '';
-      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → ${result.views.toLocaleString().padStart(12)} views${delta}`);
+      log(`${tag} → ${ok(result.views.toLocaleString().padStart(12) + ' views')}${delta}`);
     } else {
       const isGone = result.gone || /not_found|media_not_found|404/i.test(result.error || '');
       const label  = isGone ? 'DELETED' : 'BROKEN';
       s1Row[targetCol] = label;
       cache[key] = label;
       isGone ? stats.deleted++ : stats.broken++;
-      log(`[${index}/${total}] ${account.id.padEnd(12)} ${shortcode.padEnd(14)} → ${label.padStart(12)}  (${result.error})`);
+      const paintFn = isGone ? warn : err;
+      log(`${tag} → ${paintFn(label.padStart(12))}  ${dimTxt(`(${result.error})`)}`);
     }
 
     saveSharedOutput();
@@ -417,13 +431,13 @@ async function main() {
 
   // ── cookie pool setup ────────────────────────────────────────────────────
   console.log('\n' + hr('━'));
-  console.log('  Duel Clipping — Instagram View Tracker (multi-account)');
+  console.log(bold('  Duel Clipping — Instagram View Tracker (multi-account)'));
   console.log(hr('━'));
 
   let pool = loadCookiePool();
 
   if (pool.length) {
-    console.log(`\n  Found ${pool.length} saved account(s): ${pool.map(a => a.id).join(', ')}`);
+    console.log(`\n  Found ${bold(pool.length)} saved account(s): ${info(pool.map(a => a.id).join(', '))}`);
     const reuse = await ask('Use saved accounts? (y) or re-enter all? (n)', 'y');
     if (reuse.toLowerCase() !== 'y') pool = [];
   }
@@ -446,23 +460,23 @@ async function main() {
     }
   }
 
-  console.log(`  ✓ ${pool.length} account(s) ready: ${pool.map(a => a.id).join(', ')}`);
-  console.log(`  ✓ Expected speed: ~${pool.length}× faster than single-account\n`);
+  console.log(ok(`  ✓ ${pool.length} account(s) ready: ${pool.map(a => a.id).join(', ')}`));
+  console.log(ok(`  ✓ Expected speed: ~${pool.length}× faster than single-account\n`));
 
   // ── detect input files ───────────────────────────────────────────────────
   const { submissions, sheet1 } = detectInputFiles();
 
   if (!submissions || !sheet1) {
-    console.log('  ✗ Could not find required CSVs in input/\n');
-    if (!submissions) console.log('    Missing: submission history CSV');
-    if (!sheet1)      console.log('    Missing: Sheet1 CSV');
+    console.log(err('  ✗ Could not find required CSVs in input/\n'));
+    if (!submissions) console.log(err('    Missing: submission history CSV'));
+    if (!sheet1)      console.log(err('    Missing: Sheet1 CSV'));
     console.log(`\n  Add both files to: ${INPUT_DIR}\n`);
     await pause('Press Enter to exit...');
     process.exit(1);
   }
 
-  console.log(`  ✓ Submissions : ${submissions}`);
-  console.log(`  ✓ View sheet  : ${sheet1}\n`);
+  console.log(ok(`  ✓ Submissions : ${submissions}`));
+  console.log(ok(`  ✓ View sheet  : ${sheet1}\n`));
 
   // ── parse ────────────────────────────────────────────────────────────────
   const subs  = parseCSV(fs.readFileSync(path.join(INPUT_DIR, submissions), 'utf8'));
@@ -476,10 +490,10 @@ async function main() {
 
   // ── week filter ──────────────────────────────────────────────────────────
   const weeks = availableWeeks(subs.rows, colWeek);
-  console.log('  Weeks found:');
+  console.log(bold('  Weeks found:'));
   weeks.forEach(w => {
     const count = subs.rows.filter(r => r[colWeek] === w && r[colPlatform] === 'Instagram').length;
-    console.log(`    ${w}  (${count} Instagram posts)`);
+    console.log(`    ${info(w)}  ${dimTxt(`(${count} Instagram posts)`)}`);
   });
   console.log('');
 
@@ -491,9 +505,9 @@ async function main() {
   const detected     = detectNextViewsColumn(views.headers);
   const existingCols = views.headers.filter(h => /^views_w?\d+$/i.test(h));
 
-  console.log(`  Existing columns : ${existingCols.join('  →  ') || '(none yet)'}`);
-  console.log(`  Next column      : ${detected.col}\n`);
-  console.log(`  [1] This week — add ${detected.col}`);
+  console.log(`  Existing columns : ${dimTxt(existingCols.join('  →  ') || '(none yet)')}`);
+  console.log(`  Next column      : ${info(detected.col)}\n`);
+  console.log(`  [1] This week — add ${bold(detected.col)}`);
   console.log('  [2] Backfill  — fill missing cells in existing column\n');
 
   const modeChoice = await choose('Choose mode', [{ key: '1' }, { key: '2' }]);
@@ -503,16 +517,16 @@ async function main() {
 
   if (modeChoice === '1') {
     targetCol = detected.col;
-    console.log(`  ✓ Writing to new column: ${targetCol}\n`);
+    console.log(ok(`  ✓ Writing to new column: ${targetCol}\n`));
   } else {
     backfillMode = true;
     if (!existingCols.length) {
-      console.log('  ✗ No existing columns to backfill.\n');
+      console.log(err('  ✗ No existing columns to backfill.\n'));
       process.exit(1);
     }
     existingCols.forEach((c, i) => {
       const missing = views.rows.filter(r => r['platform'] === 'Instagram' && (!r[c] || r[c] === '0')).length;
-      console.log(`  [${i + 1}] ${c}   (${missing} missing)`);
+      console.log(`  [${i + 1}] ${c}   ${dimTxt(`(${missing} missing)`)}`);
     });
     console.log('');
     let pick = null;
@@ -520,16 +534,16 @@ async function main() {
       const ans = await ask('Enter number');
       const idx = parseInt(ans) - 1;
       if (!isNaN(idx) && existingCols[idx]) pick = existingCols[idx];
-      else console.log('  Invalid choice.\n');
+      else console.log(err('  Invalid choice.\n'));
     }
     targetCol = pick;
-    console.log(`\n  ✓ Backfilling: ${targetCol}\n`);
+    console.log(ok(`\n  ✓ Backfilling: ${targetCol}\n`));
   }
 
   if (!views.headers.includes(targetCol)) {
     views.headers.push(targetCol);
     views.rows.forEach(r => { if (r[targetCol] === undefined) r[targetCol] = ''; });
-    console.log(`  ✓ New column "${targetCol}" added\n`);
+    console.log(ok(`  ✓ New column "${targetCol}" added\n`));
   }
 
   const prevColIdx = existingCols[existingCols.length - 1];
@@ -544,11 +558,19 @@ async function main() {
     if (key) sheet1Map.set(key, row);
   }
 
-  const igSubs = subs.rows.filter(r => {
+  // Pre-flight: split candidates into fetchable (has a shortcode) vs. invalid
+  // links (profile pages, listing tabs, etc.) so bad data is surfaced up front
+  // instead of silently vanishing from the counts.
+  const igCandidates = subs.rows.filter(r => {
     if (r[colPlatform] !== 'Instagram') return false;
     if (weekFilter && r[colWeek] !== weekFilter) return false;
-    return !!stripShortcode(r[colPostLink]);
+    return true;
   });
+
+  const igSubs = [], invalidLinkRows = [];
+  for (const r of igCandidates) {
+    (stripShortcode(r[colPostLink]) ? igSubs : invalidLinkRows).push(r);
+  }
 
   const toFetch = [], alreadyDone = [], notInSheet1 = [];
   for (const row of igSubs) {
@@ -563,28 +585,59 @@ async function main() {
     }
   }
 
+  // Invalid links that are sitting in Sheet1 with an empty target cell —
+  // these are the ones worth offering to mark BROKEN, since they'll never
+  // resolve to a fetchable post.
+  const invalidNeedingFix = [];
+  for (const row of invalidLinkRows) {
+    const key = normUrl(row[colPostLink]);
+    const s1  = sheet1Map.get(key);
+    if (s1) {
+      const val = (s1[targetCol] || '').trim();
+      if (!val || val === '0') invalidNeedingFix.push({ subRow: row, s1Row: s1 });
+    }
+  }
+
   console.log(hr());
-  console.log(`\n  Total IG submissions : ${igSubs.length}`);
-  console.log(`  Already done         : ${alreadyDone.length}`);
-  console.log(`  Not in Sheet1        : ${notInSheet1.length}`);
-  console.log(`  To fetch             : ${toFetch.length}`);
-  console.log(`  Workers (accounts)   : ${pool.length}`);
+  console.log(bold('\n  Summary'));
+  const summaryLine = (label, value, color = s => s) => console.log(`  ${label.padEnd(22)} ${color(String(value))}`);
+  summaryLine('Total IG submissions', igCandidates.length);
+  summaryLine('Already done',         alreadyDone.length, ok);
+  summaryLine('Invalid links',        invalidLinkRows.length, invalidLinkRows.length ? warn : dimTxt);
+  summaryLine('Not in Sheet1',        notInSheet1.length, dimTxt);
+  summaryLine('To fetch',             toFetch.length, toFetch.length ? bold : dimTxt);
+  summaryLine('Workers (accounts)',   pool.length);
   if (toFetch.length > 0) {
     const perWorker  = Math.ceil(toFetch.length / pool.length);
     const estSecs    = perWorker * 2.5;
     const estMins    = Math.ceil(estSecs / 60);
-    console.log(`  Est. time           : ~${estMins} min  (vs ~${Math.ceil(toFetch.length * 2.5 / 60)} min single-account)`);
+    summaryLine('Est. time', `~${estMins} min  ${dimTxt(`(vs ~${Math.ceil(toFetch.length * 2.5 / 60)} min single-account)`)}`);
   }
   console.log('');
 
+  if (invalidNeedingFix.length) {
+    console.log(warn(`  ⚠ ${invalidNeedingFix.length} link(s) aren't a specific post (profile page or "reels" tab) — can't be fetched:`));
+    invalidNeedingFix.slice(0, 10).forEach(({ subRow }) => console.log(dimTxt(`    • ${subRow[colPostLink]}`)));
+    if (invalidNeedingFix.length > 10) console.log(dimTxt(`    ...and ${invalidNeedingFix.length - 10} more`));
+    console.log('');
+    const markBroken = await ask(`  Mark these as BROKEN in ${targetCol} so they stop showing as missing? (y/n)`, 'y');
+    if (markBroken.toLowerCase() === 'y') {
+      for (const { s1Row } of invalidNeedingFix) s1Row[targetCol] = 'BROKEN';
+      fs.writeFileSync(path.join(OUTPUT_DIR, 'Sheet1_updated.csv'), serializeCSV(views.headers, views.rows));
+      console.log(ok(`  ✓ Marked ${invalidNeedingFix.length} row(s) as BROKEN and saved.\n`));
+    } else {
+      console.log('');
+    }
+  }
+
   if (!toFetch.length) {
-    console.log('  Nothing to fetch — all rows already have data.\n');
+    console.log(ok('  Nothing to fetch — all rows already have data.\n'));
     await pause('Press Enter to exit...');
     process.exit(0);
   }
 
-  const go = await ask(`  Fetch ${toFetch.length} reels with ${pool.length} account(s) now? (y/n)`, 'y');
-  if (go.toLowerCase() !== 'y') { console.log('\n  Cancelled.\n'); process.exit(0); }
+  const go = await ask(`  Fetch ${bold(toFetch.length)} reels with ${bold(pool.length)} account(s) now? (y/n)`, 'y');
+  if (go.toLowerCase() !== 'y') { console.log(warn('\n  Cancelled.\n')); process.exit(0); }
 
   // ── build queue with index labels ────────────────────────────────────────
   const runLabel = `${weekFilter || 'ALL'}::${targetCol}`;
@@ -619,18 +672,18 @@ async function main() {
 
   console.log('');
   console.log(hr());
-  console.log(`\n  ✓ Complete`);
-  console.log(`    Fetched   : ${stats.succeeded}`);
-  console.log(`    Deleted   : ${stats.deleted}`);
-  console.log(`    Broken    : ${stats.broken}`);
-  console.log(`\n  ✓ Saved to: ${path.join(OUTPUT_DIR, 'Sheet1_updated.csv')}\n`);
-  console.log('  Upload back to Google Sheets:');
-  console.log('  File → Import → Upload → Replace current sheet\n');
+  console.log(ok(`\n  ✓ Complete`));
+  console.log(`    Fetched   : ${ok(stats.succeeded)}`);
+  console.log(`    Deleted   : ${warn(stats.deleted)}`);
+  console.log(`    Broken    : ${err(stats.broken)}`);
+  console.log(ok(`\n  ✓ Saved to: ${path.join(OUTPUT_DIR, 'Sheet1_updated.csv')}\n`));
+  console.log(dimTxt('  Upload back to Google Sheets:'));
+  console.log(dimTxt('  File → Import → Upload → Replace current sheet\n'));
   await pause('Press Enter to exit...');
 }
 
 main().catch(e => {
-  console.error('\n  ✗ Unexpected error:', e.message);
-  console.error(e.stack);
+  console.error(err(`\n  ✗ Unexpected error: ${e.message}`));
+  console.error(dimTxt(e.stack));
   process.exitCode = 1;
 });
