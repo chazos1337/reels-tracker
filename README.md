@@ -57,11 +57,15 @@ For each account:
 
 1. Open Chrome and go to [instagram.com](https://www.instagram.com)
 2. Log in to the account
-3. Press `F12` → **Application** tab → **Cookies** → `https://www.instagram.com`
-4. Copy the values for:
-   - `sessionid`
-   - `csrftoken`
-   - `ds_user_id`
+3. Press `F12` → open the **Network** tab
+4. Refresh the page, then click any request made to `instagram.com` in the list
+5. In the panel that opens, find **Request Headers** and locate the line starting with `cookie:`
+6. Copy everything after `cookie: ` — it'll be one long line with dozens of `key=value` pairs separated by semicolons
+7. Paste that whole line when the script asks for it
+
+You don't need to hunt down `sessionid`, `csrftoken`, and `ds_user_id` individually — the script pulls just those three out of whatever you paste and ignores the rest. If it can't find all three, it'll tell you which are missing and let you try again or enter them one at a time.
+
+The tool also checks each saved session is still alive at startup, before building the fetch queue — so an expired cookie gets caught immediately instead of mid-run.
 
 > Use dedicated throwaway accounts — not your personal Instagram.
 

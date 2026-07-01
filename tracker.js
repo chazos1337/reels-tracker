@@ -99,11 +99,13 @@ function saveCache() {
 function cacheKey(runLabel, shortcode) { return `${runLabel}::${shortcode}`; }
 
 // ── cookie pool ───────────────────────────────────────────────────────────────
-function parseCookieFile(text) {
+// Handles both the stored cookies_N.txt format (one "key=value" per line) and
+// a pasted browser "Cookie:" request header (one long "key=value; key2=value2" line).
+function parseCookieBlob(text) {
   const obj = {};
-  for (const line of text.split('\n')) {
-    const eq = line.indexOf('=');
-    if (eq > 0) obj[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  for (const part of (text || '').split(/[\n;]+/)) {
+    const eq = part.indexOf('=');
+    if (eq > 0) obj[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
   }
   return obj;
 }
@@ -120,7 +122,7 @@ function loadCookiePool() {
 
   const rootCookies = path.join(DIR, 'cookies.txt');
   if (fs.existsSync(rootCookies)) {
-    const c = parseCookieFile(fs.readFileSync(rootCookies, 'utf8'));
+    const c = parseCookieBlob(fs.readFileSync(rootCookies, 'utf8'));
     if (c.sessionid && c.csrftoken && c.ds_user_id) {
       pool.push({ id: 'account_0', cookies: c, file: rootCookies });
     }
@@ -131,7 +133,7 @@ function loadCookiePool() {
     .sort();
 
   for (const f of files) {
-    const c = parseCookieFile(fs.readFileSync(path.join(COOKIES_DIR, f), 'utf8'));
+    const c = parseCookieBlob(fs.readFileSync(path.join(COOKIES_DIR, f), 'utf8'));
     if (c.sessionid && c.csrftoken && c.ds_user_id) {
       pool.push({ id: f.replace('.txt', ''), cookies: c, file: path.join(COOKIES_DIR, f) });
     }
@@ -245,6 +247,45 @@ function fetchViews(shortcode, cookies) {
   });
 }
 
+// Cheap "is this session still alive" probe — hits the logged-in user's own
+// profile info, which needs valid cookies but doesn't depend on any specific
+// post existing. Used to catch a dead cookie at startup instead of discovering
+// it mid-run when a worker's first fetch fails.
+function checkSession(cookies) {
+  return new Promise(resolve => {
+    const req = https.request({
+      hostname: 'i.instagram.com',
+      path: '/api/v1/accounts/current_user/?edit=true',
+      method: 'GET',
+      headers: {
+        'User-Agent' : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        'X-CSRFToken': cookies.csrftoken,
+        'Referer'    : 'https://www.instagram.com/',
+        'X-IG-App-ID': '936619743392459',
+        'Cookie'     : cookieStr(cookies),
+      },
+    }, res => {
+      if (res.statusCode === 302) { res.resume(); return resolve({ alive: false, error: '302 redirect (session expired)' }); }
+      if (res.statusCode === 401 || res.statusCode === 403) { res.resume(); return resolve({ alive: false, error: `HTTP ${res.statusCode}` }); }
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const authMsg = /login_required|checkpoint_required|not_authorized/i.test(data?.message || '');
+          if (authMsg) return resolve({ alive: false, error: data.message });
+          resolve({ alive: res.statusCode >= 200 && res.statusCode < 300 && !!data?.user, error: data?.message });
+        } catch {
+          resolve({ alive: res.statusCode >= 200 && res.statusCode < 300, error: 'parse error' });
+        }
+      });
+    });
+    req.on('error', e => resolve({ alive: false, error: e.message }));
+    req.setTimeout(10000, () => { req.destroy(); resolve({ alive: false, error: 'timeout' }); });
+    req.end();
+  });
+}
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── file detection ────────────────────────────────────────────────────────────
@@ -301,19 +342,41 @@ function detectNextViewsColumn(headers) {
 }
 
 // ── cookie setup ──────────────────────────────────────────────────────────────
+const REQUIRED_COOKIE_KEYS = ['sessionid', 'csrftoken', 'ds_user_id'];
+
 async function cookieSetup(accountId, reason = '') {
   console.log('\n' + hr());
   if (reason) console.log(`\n  ${warn('⚠')}  ${warn(reason)}\n`);
   console.log(`\n  Setting up cookies for: ${bold(accountId)}`);
-  console.log(dimTxt('\n  HOW TO GET COOKIES:'));
+  console.log(dimTxt('\n  HOW TO GET YOUR COOKIE (one copy, not three):'));
   console.log(dimTxt('  1. Open Chrome → instagram.com → log in'));
-  console.log(dimTxt('  2. F12 → Application → Cookies → https://www.instagram.com'));
-  console.log(dimTxt('  3. Copy: sessionid, csrftoken, ds_user_id\n'));
+  console.log(dimTxt('  2. Press F12 → open the "Network" tab (not "Application")'));
+  console.log(dimTxt('  3. Refresh the page, then click any request made to instagram.com in the list'));
+  console.log(dimTxt('  4. In the panel that opens, scroll "Request Headers" until you see a line starting with "cookie:"'));
+  console.log(dimTxt('  5. Click that line, select the whole value after "cookie: ", and copy it'));
+  console.log(dimTxt('     (it will be one long line like "mid=...; ig_did=...; sessionid=...; csrftoken=...; ..." — that\'s correct)'));
+  console.log(dimTxt('  6. Paste that entire line below. Only sessionid, csrftoken, and ds_user_id get used —'));
+  console.log(dimTxt('     everything else in the paste is ignored, so don\'t worry about trimming it down.\n'));
 
-  const cookies = {};
-  cookies.sessionid  = await ask('Paste sessionid');
-  cookies.csrftoken  = await ask('Paste csrftoken');
-  cookies.ds_user_id = await ask('Paste ds_user_id');
+  let cookies = {};
+  while (true) {
+    const pasted = await ask('Paste the cookie value here');
+    cookies = parseCookieBlob(pasted);
+    const missing = REQUIRED_COOKIE_KEYS.filter(k => !cookies[k]);
+    if (!missing.length) break;
+
+    console.log(err(`\n  ✗ Couldn't find ${missing.join(', ')} in what you pasted.`));
+    console.log(dimTxt('  Double-check you copied the FULL "cookie:" request-header line, not a single field.\n'));
+    const retry = await ask('  Try pasting again? (y) or enter the 3 values one at a time instead? (n)', 'y');
+    if (retry.toLowerCase() !== 'y') {
+      cookies = {};
+      cookies.sessionid  = await ask('Paste sessionid');
+      cookies.csrftoken  = await ask('Paste csrftoken');
+      cookies.ds_user_id = await ask('Paste ds_user_id');
+      break;
+    }
+    console.log('');
+  }
 
   const file = saveCookieAccount(accountId, cookies);
   console.log(ok(`\n  ✓ Saved to ${file}\n`));
@@ -459,6 +522,21 @@ async function main() {
       console.log('');
     }
   }
+
+  // ── session liveness check ───────────────────────────────────────────────
+  // Catch a dead cookie now, before the queue is even built, instead of
+  // discovering it partway through a run when that worker's first fetch fails.
+  console.log(dimTxt('\n  Checking sessions...'));
+  for (const account of pool) {
+    const status = await checkSession(account.cookies);
+    if (status.alive) {
+      console.log(ok(`  ✓ ${account.id.padEnd(12)} session OK`));
+    } else {
+      console.log(warn(`  ⚠ ${account.id.padEnd(12)} session expired or invalid (${status.error || 'unknown'})`));
+      account.cookies = await cookieSetup(account.id, `Account ${account.id}: session expired — needs fresh cookies before we can start`);
+    }
+  }
+  console.log('');
 
   console.log(ok(`  ✓ ${pool.length} account(s) ready: ${pool.map(a => a.id).join(', ')}`));
   console.log(ok(`  ✓ Expected speed: ~${pool.length}× faster than single-account\n`));
