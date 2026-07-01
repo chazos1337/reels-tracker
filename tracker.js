@@ -31,38 +31,26 @@ const dimTxt  = s => paint('gray', s);
 const bold    = s => paint('bold', s);
 
 // ── banner ────────────────────────────────────────────────────────────────────
+// Old-school 5-row block-letter font, hand-built — just enough glyphs to spell
+// the logo below.
+const BANNER_FONT = {
+  D: ['████ ', '█   █', '█   █', '█   █', '████ '],
+  U: ['█   █', '█   █', '█   █', '█   █', ' ███ '],
+  E: ['█████', '█    ', '████ ', '█    ', '█████'],
+  L: ['█    ', '█    ', '█    ', '█    ', '█████'],
+  '.': ['  ', '  ', '  ', '  ', '██'],
+  C: [' ████', '█    ', '█    ', '█    ', ' ████'],
+  O: [' ███ ', '█   █', '█   █', '█   █', ' ███ '],
+  M: ['█   █', '██ ██', '█ █ █', '█   █', '█   █'],
+};
+
 function printBanner() {
-  const INNER = 29; // inner content width, between the box's side walls
-  const pad = '   ';
-  const wall = dimTxt('│');
-  const top = dimTxt(pad + '╭' + '─'.repeat(INNER) + '╮');
-  const bottom = dimTxt(pad + '╰' + '─'.repeat(INNER) + '╯');
-
-  // Width math always runs on the plain (uncolored) string, so nesting
-  // separate paint() calls afterward can't throw the alignment off.
-  const centerPlain = s => {
-    const left = Math.max(0, Math.floor((INNER - s.length) / 2));
-    return ' '.repeat(left) + s + ' '.repeat(Math.max(0, INNER - s.length - left));
-  };
-
-  const dotsLine = pad + wall + dimTxt(centerPlain('●  ●  ●  ●  ●  ●  ●')) + wall;
-
-  const dots = '●  ●  ●';
-  const playPlain = centerPlain(`${dots}   ▶   ${dots}`);
-  const arrowIdx = playPlain.indexOf('▶');
-  const playLine = pad + wall
-    + dimTxt(playPlain.slice(0, arrowIdx))
-    + accent('▶')
-    + dimTxt(playPlain.slice(arrowIdx + 1))
-    + wall;
-
+  const glyphs = [...'DUEL.COM'].map(ch => BANNER_FONT[ch]);
   console.log('');
-  console.log(top);
-  console.log(dotsLine);
-  console.log(playLine);
-  console.log(dotsLine);
-  console.log(bottom);
-  console.log(bold(accent(pad + '   D U E L   C L I P P I N G')));
+  for (let r = 0; r < 5; r++) {
+    console.log('   ' + accent(bold(glyphs.map(g => g[r]).join('  '))));
+  }
+  console.log('');
 }
 
 // ── paths ─────────────────────────────────────────────────────────────────────
