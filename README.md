@@ -17,6 +17,17 @@ The original single-account version fetched one reel every 2–3 seconds. This v
 
 ---
 
+## What's new (reliability update)
+
+- **Pre-flight link validation** — links that aren't a specific post (a profile page, or a profile's "reels" tab with no post attached) used to just silently disappear from the counts, making a bad batch of submissions look like "nothing to fetch." Now they're listed by name up front, and you're offered a one-key option to mark them `BROKEN` in the sheet so they stop showing as missing.
+- **Startup session check** — each account's cookies are validated against Instagram *before* the fetch queue is built, so an expired session is caught in one request instead of surfacing mid-run.
+- **One-paste cookie setup** — paste the whole `cookie` request header once instead of copying `sessionid`, `csrftoken`, and `ds_user_id` into three separate prompts. See [Getting Instagram cookies](#getting-instagram-cookies).
+- **Combined CSV support** — if your Google Sheets export already has `post_link` and `platform` alongside the `views_wN` columns, you can drop just that one file in `input/` instead of exporting submissions and Sheet1 separately.
+- **Colorized console output** — green for successful fetches, yellow for deleted/paused/invalid, red for broken/errors, gray for cached/secondary info. Auto-disables when output isn't a real terminal (piped to a file, or `NO_COLOR` set).
+- Fixed a bug where Instagram's `/reels/` (plural) URLs were silently rejected — only `/reel/` (singular) and `/p/` were recognized before.
+
+---
+
 ## Folder layout
 
 ```
