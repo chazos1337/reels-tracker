@@ -197,9 +197,11 @@ function fetchViews(shortcode, cookies) {
         return;
       }
       const status = res.statusCode;
-      // Any non-2xx that isn't a known "post gone" signal = rate limit / error pause
+      // Any non-2xx that isn't a known "post gone"/"bad request" signal = rate limit / error pause.
+      // 400 is excluded here — Instagram returns it for deleted/inaccessible media (not rate limiting),
+      // so it needs its body read below instead of being blindly requeued forever.
       const isRateLimit = status === 429;
-      const isClientErr = status >= 400 && status !== 404 && status !== 410;
+      const isClientErr = status >= 400 && status !== 400 && status !== 404 && status !== 410;
       if (isRateLimit || (isClientErr && status !== 401 && status !== 403)) {
         res.resume();
         resolve({ views: null, authFail: false, rateLimited: true, error: `HTTP ${status}` });
@@ -216,11 +218,13 @@ function fetchViews(shortcode, cookies) {
           } else {
             const authMsg  = /login_required|checkpoint_required|not_authorized/i.test(data?.message || '');
             const authFail = status === 401 || status === 403 || authMsg;
-            const gone     = /not_found|media_not_found|deleted/i.test(data?.message || '');
+            const gone     = status === 400 || status === 404 || status === 410 ||
+                              /not[_ ]?found|media_not_found|deleted|unavailable|does not exist/i.test(data?.message || '');
             resolve({ views: null, authFail, gone, error: data?.message || `HTTP ${status}` });
           }
         } catch {
-          resolve({ views: null, authFail: false, error: 'parse error' });
+          // 400 with an unparsable body is still a deleted/inaccessible reel, not a parse failure worth retrying
+          resolve({ views: null, authFail: false, gone: status === 400, error: status === 400 ? 'HTTP 400 (deleted or inaccessible)' : 'parse error' });
         }
       });
     });
