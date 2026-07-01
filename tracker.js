@@ -348,15 +348,13 @@ async function cookieSetup(accountId, reason = '') {
   console.log('\n' + hr());
   if (reason) console.log(`\n  ${warn('⚠')}  ${warn(reason)}\n`);
   console.log(`\n  Setting up cookies for: ${bold(accountId)}`);
-  console.log(dimTxt('\n  HOW TO GET YOUR COOKIE (one copy, not three):'));
-  console.log(dimTxt('  1. Open Chrome → instagram.com → log in'));
-  console.log(dimTxt('  2. Press F12 → open the "Network" tab (not "Application")'));
-  console.log(dimTxt('  3. Refresh the page, then click any request made to instagram.com in the list'));
-  console.log(dimTxt('  4. In the panel that opens, scroll "Request Headers" until you see a line starting with "cookie:"'));
-  console.log(dimTxt('  5. Click that line, select the whole value after "cookie: ", and copy it'));
-  console.log(dimTxt('     (it will be one long line like "mid=...; ig_did=...; sessionid=...; csrftoken=...; ..." — that\'s correct)'));
-  console.log(dimTxt('  6. Paste that entire line below. Only sessionid, csrftoken, and ds_user_id get used —'));
-  console.log(dimTxt('     everything else in the paste is ignored, so don\'t worry about trimming it down.\n'));
+  console.log(dimTxt('\n  HOW TO GET YOUR COOKIE:'));
+  console.log(dimTxt('  1. Log into instagram.com in Chrome'));
+  console.log(dimTxt('  2. Press F12, click the "Network" tab, then refresh the page (F5)'));
+  console.log(dimTxt('  3. Click any request to instagram.com in the list, then click "Headers" on the right'));
+  console.log(dimTxt('  4. Under "Request Headers", find the row named "cookie"'));
+  console.log(dimTxt('  5. Right-click it → "Copy value"'));
+  console.log(dimTxt('  6. Paste it below and press Enter\n'));
 
   let cookies = {};
   while (true) {
@@ -366,7 +364,7 @@ async function cookieSetup(accountId, reason = '') {
     if (!missing.length) break;
 
     console.log(err(`\n  ✗ Couldn't find ${missing.join(', ')} in what you pasted.`));
-    console.log(dimTxt('  Double-check you copied the FULL "cookie:" request-header line, not a single field.\n'));
+    console.log(dimTxt('  Make sure you right-clicked the "cookie" row itself and chose "Copy value".\n'));
     const retry = await ask('  Try pasting again? (y) or enter the 3 values one at a time instead? (n)', 'y');
     if (retry.toLowerCase() !== 'y') {
       cookies = {};
