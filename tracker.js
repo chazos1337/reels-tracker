@@ -116,7 +116,7 @@ function loadCookiePool() {
   }
 
   const files = fs.readdirSync(COOKIES_DIR)
-    .filter(f => f.endsWith('.txt'))
+    .filter(f => f.endsWith('.txt') && f.toLowerCase() !== 'readme.txt')
     .sort();
 
   for (const f of files) {
@@ -166,7 +166,7 @@ async function pause(msg = 'Press Enter to continue...') { await ask(msg); }
 
 // ── IG API ────────────────────────────────────────────────────────────────────
 function stripShortcode(url) {
-  const m = (url || '').match(/instagram\.com\/(?:[^/]+\/)?(?:reel|p)\/([A-Za-z0-9_-]+)/);
+  const m = (url || '').match(/instagram\.com\/(?:[^/]+\/)?(?:reels?|p)\/([A-Za-z0-9_-]+)/);
   return m ? m[1] : null;
 }
 
@@ -258,10 +258,20 @@ function detectInputFiles() {
     const header = sniffHeader(text);
     if (header.includes('views_')) {
       sheet1 = f;
-    } else if (header.includes('source_message_id') && header.includes('submission_id')) {
+    } else if (header.includes('source_message_id') || header.includes('submission_id')) {
       submissions = f;
     }
   }
+
+  // Combined export: one CSV can serve as both submissions and views sheet
+  // if it already carries post_link/platform alongside the views_wN columns.
+  if (!submissions && sheet1) {
+    const header = sniffHeader(fs.readFileSync(path.join(INPUT_DIR, sheet1), 'utf8'));
+    if (header.includes('post_link') && header.includes('platform')) {
+      submissions = sheet1;
+    }
+  }
+
   return { submissions, sheet1, all: csvs };
 }
 

@@ -1,4 +1,7 @@
 cookies.txt
+cookies/*.txt
+!cookies/README.txt
+*.log
 cache.json
 cache.db
 cache.db.json
