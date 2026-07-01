@@ -247,43 +247,16 @@ function fetchViews(shortcode, cookies) {
   });
 }
 
-// Cheap "is this session still alive" probe — hits the logged-in user's own
-// profile info, which needs valid cookies but doesn't depend on any specific
-// post existing. Used to catch a dead cookie at startup instead of discovering
-// it mid-run when a worker's first fetch fails.
-function checkSession(cookies) {
-  return new Promise(resolve => {
-    const req = https.request({
-      hostname: 'i.instagram.com',
-      path: '/api/v1/accounts/current_user/?edit=true',
-      method: 'GET',
-      headers: {
-        'User-Agent' : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-        'X-CSRFToken': cookies.csrftoken,
-        'Referer'    : 'https://www.instagram.com/',
-        'X-IG-App-ID': '936619743392459',
-        'Cookie'     : cookieStr(cookies),
-      },
-    }, res => {
-      if (res.statusCode === 302) { res.resume(); return resolve({ alive: false, error: '302 redirect (session expired)' }); }
-      if (res.statusCode === 401 || res.statusCode === 403) { res.resume(); return resolve({ alive: false, error: `HTTP ${res.statusCode}` }); }
-      let body = '';
-      res.on('data', c => body += c);
-      res.on('end', () => {
-        try {
-          const data = JSON.parse(body);
-          const authMsg = /login_required|checkpoint_required|not_authorized/i.test(data?.message || '');
-          if (authMsg) return resolve({ alive: false, error: data.message });
-          resolve({ alive: res.statusCode >= 200 && res.statusCode < 300 && !!data?.user, error: data?.message });
-        } catch {
-          resolve({ alive: res.statusCode >= 200 && res.statusCode < 300, error: 'parse error' });
-        }
-      });
-    });
-    req.on('error', e => resolve({ alive: false, error: e.message }));
-    req.setTimeout(10000, () => { req.destroy(); resolve({ alive: false, error: 'timeout' }); });
-    req.end();
-  });
+// Cheap "is this session still alive" probe. Reuses fetchViews() — the
+// battle-tested request path — against a throwaway media id instead of
+// inventing a second endpoint with its own auth/parsing quirks. We don't
+// care whether that id resolves to a real post: Instagram evaluates the
+// session before it evaluates whether the post exists, so a dead session
+// fails with authFail regardless of the target, and a live session just
+// gets a normal "not found" for the fake id (authFail: false).
+async function checkSession(cookies) {
+  const result = await fetchViews('C0000000000', cookies);
+  return result.authFail ? { alive: false, error: result.error } : { alive: true };
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
