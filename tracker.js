@@ -20,13 +20,13 @@ const readline = require('readline');
 
 // ── color ─────────────────────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
-const codes = { bold: 1, red: 31, green: 32, yellow: 33, magenta: 35, cyan: 36, gray: 90 };
+const codes = { bold: 1, red: 31, green: 32, yellow: 33, white: 37, cyan: 36, gray: 90 };
 const paint = (name, s) => useColor ? `\x1b[${codes[name]}m${s}\x1b[0m` : String(s);
 const ok      = s => paint('green', s);
 const warn    = s => paint('yellow', s);
 const err     = s => paint('red', s);
 const info    = s => paint('cyan', s);
-const accent  = s => paint('magenta', s);
+const white   = s => paint('white', s);
 const dimTxt  = s => paint('gray', s);
 const bold    = s => paint('bold', s);
 
@@ -48,7 +48,7 @@ function printBanner() {
   const glyphs = [...'DUEL.COM'].map(ch => BANNER_FONT[ch]);
   console.log('');
   for (let r = 0; r < 5; r++) {
-    console.log('   ' + accent(bold(glyphs.map(g => g[r]).join('  '))));
+    console.log('   ' + bold(white(glyphs.map(g => g[r]).join('  '))));
   }
   console.log('');
 }
